@@ -32,12 +32,29 @@ __device__ void BlockSharedMemReduce(float* smem) {
     }
     __syncthreads();
   }
+  /*
+    if (blockSize >= 64) {
+      if (threadIdx.x < 32) {
+        smem[threadIdx.x] += smem[threadIdx.x + 32];
+      }
+      __syncthreads();
+    }
+  */
   // the final warp
   if (threadIdx.x < 32) {
+    // volatile 为了防止编译器优化，确保每个线程的内存操作都执行
     volatile float* vshm = smem;
+    // blockDim是block的thread count
     if (blockDim.x >= 64) {
       vshm[threadIdx.x] += vshm[threadIdx.x + 32];
     }
+    // 因为SIMT
+    /*
+    同一 warp 内的线程 共享一个指令单元（scheduler），每个周期取指、译码一条指令，然后广播到 warp 内所有活跃线程。
+    所以vshm[0] += vshm[16] 和 vshm[16] += vshm[32] 会同时执行
+    就是先load vshm[0] 和 vshm[16] 到寄存器，再执行加法指令，最后store 结果回 vshm[0] 和 vshm[16]
+    这样交叉执行，每个周期都有多个程的指令在执行，提高了指令的并行度，而且还不会因为指令的依赖关系而阻塞。
+    */
     vshm[threadIdx.x] += vshm[threadIdx.x + 16];
     vshm[threadIdx.x] += vshm[threadIdx.x + 8];
     vshm[threadIdx.x] += vshm[threadIdx.x + 4];

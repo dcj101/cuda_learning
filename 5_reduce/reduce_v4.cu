@@ -42,6 +42,7 @@ __global__ void reduce_v4(float *d_in,float *d_out){
 
     // 基于v3改进：把最后一个warp抽离出来reduce，避免多做一次sync threads
     // 此时一个block对d_in这块数据的reduce sum结果保存在id为0的线程上面
+    // 一个warp是32个线程，当tid < 32时，才需要参与warp的reduce sum
     for (int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s) {
             smem[tid] += smem[tid + s];
