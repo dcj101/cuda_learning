@@ -40,6 +40,7 @@ __global__ void reduce_warp_level(float *d_in,float *d_out, unsigned int n){
     const int laneId = tid % WarpSize;
     // 当前线程所在warp在所有warp范围内的ID
     const int warpId = tid / WarpSize; 
+    // printf("tid = %d, laneId = %d, warpId = %d\n", tid, laneId, warpId);
     // 对当前线程所在warp作warpshuffle操作，直接交换warp内线程间的寄存器数据
     sum = WarpShuffle(sum);
     // warp级别的reduce 最后会reduce到laneId=0的线程的sum寄存器中
@@ -53,6 +54,9 @@ __global__ void reduce_warp_level(float *d_in,float *d_out, unsigned int n){
     //首先，把warpsums存入前blockDim.x / WarpSize个线程的sum寄存器中
     //接着，继续warpshuffle
     //现在有warpId个warp的reduce sum结果，每个warp的reduce sum结果存入前warpId个线程的sum寄存器中
+    // 然后，继续warpshuffle操作，对每个warp的reduce sum结果求和
+    // 最后，laneId=0的线程会得到整个block的reduce sum结果
+    // 因为一个block最大1024个线程。blockSize/WarpSize <= 32，所以最后只需要一次就能得到整个block的reduce sum结果
     sum = (tid < blockSize / WarpSize) ? WarpSums[tid] : 0;
     // Final reduce using first warp
     if (warpId == 0) {
