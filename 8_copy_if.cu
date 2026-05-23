@@ -18,68 +18,75 @@ int filter(int *dst, int *src, int n) {
 }
 // 数据量为256000000时，latency=14.37ms
 // naive kernel
-//__global__ void filter_k(int *dst, int *nres, int *src, int n) {
-//  int i = threadIdx.x + blockIdx.x * blockDim.x;
-//  // 输入数据大于0的，计数器+1，并把该数写到输出显存以计数器值为索引的地址
-//  if(i < n && src[i] > 0)
-//    dst[atomicAdd(nres, 1)] = src[i];
-//}
+__global__ void filter_k(int *dst, int *nres, int *src, int n) {
+ int i = threadIdx.x + blockIdx.x * blockDim.x;
+ // 输入数据大于0的，计数器+1，并把该数写到输出显存以计数器值为索引的地址
+ if(i < n && src[i] > 0)
+   dst[atomicAdd(nres, 1)] = src[i];
+}
 
 // 数据量为256000000时，latency=13.86ms
 // block level, use block level atomics based on shared memory
-// __global__ 
-// void filter_shared_k(int *dst, int *nres, const int* src, int n) {
-//   // 计数器声明为shared memory，去计数各个block范围内大于0的数量
-//   __shared__ int l_n;
-//   int gtid = blockIdx.x * blockDim.x + threadIdx.x;
-//   int total_thread_num = blockDim.x * gridDim.x;
+__global__ 
+void filter_shared_k(int *dst, int *nres, const int* src, int n) {
+  // 计数器声明为shared memory，去计数各个block范围内大于0的数量
+  __shared__ int l_n;
+  int gtid = blockIdx.x * blockDim.x + threadIdx.x;
+  int total_thread_num = blockDim.x * gridDim.x;
 
-//   for (int i = gtid; i < n; i += total_thread_num) {
-//     // use first thread to zero the counter
-//     // 初始化只需1个线程来操作
-//     if (threadIdx.x == 0)
-//       l_n = 0;
-//     __syncthreads();
+  for (int i = gtid; i < n; i += total_thread_num) {
+    // use first thread to zero the counter
+    // 初始化只需1个线程来操作
+    if (threadIdx.x == 0)
+      l_n = 0;
+    __syncthreads();
 
-//     int d, pos;
-//     // l_n表示每个block范围内大于0的数量，block内的线程都可访问
-//     // pos是每个线程私有的寄存器，且作为atomicAdd的返回值，表示当前线程对l_n原子加1之前的l_n，比如1 2 4号线程都大于0，那么对于4号线程来说l_n = 3, pos = 2
-//     if(i < n && src[i] > 0) {
-//         pos = atomicAdd(&l_n, 1);
-//     }
-//     __syncthreads();
+    int d, pos;
+    // bugfix: 每个线程都要读取src[i]，否则会导致数据不一致
+    d = src[i];
+    // l_n表示每个block范围内大于0的数量，block内的线程都可访问
+    // pos是每个线程私有的寄存器，且作为atomicAdd的返回值，表示当前线程对l_n原子加1之前的l_n，比如1 2 4号线程都大于0，那么对于4号线程来说l_n = 3, pos = 2
+    if(i < n && d > 0) {
+        pos = atomicAdd(&l_n, 1);
+    }
+    __syncthreads();
 
-//     // 每个block选出tid=0作为leader
-//     // leader把每个block的l_n累加到全局计数器(nres),即所有block的局部计数器做一个reduce sum
-//     // 注意: 下下行原子加返回的l_n为全局计数器nres原子加l_n之前的nres，比如对于block1，已知原子加前，nres = 2, l_n = 3，原子加后, nres = 2+3, 返回的l_n = 2
-//     if(threadIdx.x == 0)
-//       l_n = atomicAdd(nres, l_n);
-//     __syncthreads();
+    // 每个block选出tid=0作为leader
+    // leader把每个block的l_n累加到全局计数器(nres),即所有block的局部计数器做一个reduce sum
+    // 注意: 下下行原子加返回的l_n为全局计数器nres原子加l_n之前的nres，比如对于block1，已知原子加前，nres = 2, l_n = 3，原子加后, nres = 2+3, 返回的l_n = 2
+    // 注意：这里l_n的值从block的偏移变成了全局的偏移
+    if(threadIdx.x == 0)
+      l_n = atomicAdd(nres, l_n);
+    __syncthreads();
 
-//     //write & store
-//     if(i < n && d > 0) {
-//     // 1. pos: src[thread]>0的thread在当前block的index
-//     // 2. l_n: 在当前block的前面几个block的所有src>0的个数
-//     // 3. pos + l_n：当前thread的全局offset
-//       pos += l_n; 
-//       dst[pos] = d;
-//     }
-//     __syncthreads();
-//   }
-// }
+    //write & store
+    if(i < n && d > 0) {
+    // 1. pos: src[thread]>0的thread在当前block的index
+    // 2. l_n: 在当前block的前面几个block的所有src>0的个数
+    // 3. pos + l_n：当前thread的全局offset
+      pos += l_n; 
+      dst[pos] = d;
+    }
+    __syncthreads();
+  }
+}
 
 //数据量为256000000时，latency=13.79ms
 //warp level, use warp-aggregated atomics
 __device__ int atomicAggInc(int *ctr) {
-  unsigned int active = __activemask();
+  unsigned int active = __activemask(); // 统计一个warp里面有哪些线程是active的，返回一个mask，比如110000...00 也就是谁调了这里
   int leader = __ffs(active) - 1; // 视频所示代码这里有误，leader应该表示warp里面第一个src[threadIdx.x]>0的threadIdx.x
   int change = __popc(active);//warp mask中为1的数量
   int lane_mask_lt;
-  asm("mov.u32 %0, %%lanemask_lt;" : "=r"(lane_mask_lt));
+  // 下面两步就是找到 比当前线程id小的线程的数量，也就是这个线程在warp中的排名
+  asm("mov.u32 %0, %%lanemask_lt;" : "=r"(lane_mask_lt));// 获取当前线程的id小的mack, 比如线程id=3 1110000...00
   unsigned int rank = __popc(active & lane_mask_lt); // 比当前线程id小且值为1的mask之和
   int warp_res;
+  // 排名0的线程是leader，需要累加全局计数器nres
+  // 注意：这里warp_res的值从warp的偏移变成了全局的偏移
   if(rank == 0)//leader thread of every warp
     warp_res = atomicAdd(ctr, change);//compute global offset of warp
+  // __shfl_sync 是 warp 内数据交换指令，这里将 leader 线程的 warp_res 值广播给所有掩码 active 中的线程。
   warp_res = __shfl_sync(active, warp_res, leader);//broadcast warp_res of leader thread to every active thread
   return warp_res + rank; // global offset + local offset = final offset，即L91表示的atomicAggInc(nres), 为src[i]的最终的写入到dst的位置
 }
