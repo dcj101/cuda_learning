@@ -8,7 +8,7 @@
 __device__ float WarpShuffle(float sum) {
     // __shfl_down_sync：前面的thread向后面的thread要数据
     // __shfl_up_sync: 后面的thread向前面的thread要数据
-    // 1. 返回前面的thread向后面的thread要的数据，比如__shfl_down_sync(0xffffffff, sum, 16)那就是返回16号线程，17号线程的数据
+    // 1. 返回前面的thread向后面的thread要的数据，比如__shfl_down_sync(0xffffffff, sum, 16)这个16是偏移量那就是返回16号线程，17号线程的数据, 然后你自己要传sum进去被其他线程获取
     // 2. 使用warp shuffle指令的数据交换不会出现warp在shared memory上交换数据时的不一致现象，这一点是由GPU driver完成，故无需任何sync, 比如syncwarp
     // 3. 原先15-19行有5个if判断block size的大小，目前已经被移除，确认了一下__shfl_down_sync等warp shuffle指令可以handle一个block或一个warp的线程数量<32，不足32会自动填充0
     // 4. 因为SIMT指令，warp里面所有的线程会在同一个周期内执行，所以可以并行执行
